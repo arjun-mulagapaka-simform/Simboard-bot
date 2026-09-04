@@ -1,0 +1,36 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.25/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.25",
+  "version": "1.0.0",
+  "id": "c6a2a2e8-511a-492e-8a76-dd57f9fb24a6",
+  "developer": {
+    "name": "MNS",
+    "websiteUrl": "https://example.com",
+    "privacyUrl": "https://example.com/privacy",
+    "termsOfUseUrl": "https://example.com/terms"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "Mention Bot POC",
+    "full": "Mention Capture Bot (POC)"
+  },
+  "description": {
+    "short": "POC bot that detects @mentions and echoes captured data.",
+    "full": "Proof-of-concept Teams bot for a ticket-creation pipeline. Currently only detects when it is @mentioned and replies with the captured message data — no extraction, entity resolution, or ticket creation yet."
+  },
+  "accentColor": "#464EB8",
+  "bots": [
+    {
+      "botId": "c6a2a2e8-511a-492e-8a76-dd57f9fb24a6",
+      "scopes": ["groupChat", "personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": [],
+  "supportsChannelFeatures": "tier1"
+}
