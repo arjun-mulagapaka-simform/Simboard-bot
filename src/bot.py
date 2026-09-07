@@ -1,13 +1,32 @@
-"""Teams bot adapter: detects @mentions and delegates to the Phase A
-pipeline (src/workflow.py) for extraction/resolution/card creation.
+"""Teams bot adapter.
+
+Detects @mentions and delegates to the Phase A pipeline (src/workflow.py)
+for extraction/resolution/card creation.
 """
 
 import os
 
-from microsoft_teams.apps import App, ActivityContext
+from fastapi import FastAPI
 from microsoft_teams.api import MessageActivity
+from microsoft_teams.apps import ActivityContext, App
+from microsoft_teams.apps.http import FastAPIAdapter
 
 from src import workflow
+from src.core.exceptions import setup_exception_handlers
+from src.core.health import router as health_router
+from src.core.logging import setup_logging
+from src.core.middleware import setup_middleware
+
+setup_logging()
+
+# Build our own FastAPI instance (rather than letting FastAPIAdapter() default
+# to a bare one) so we can register the org's logging/security middleware,
+# typed-exception handlers, and a /health route before handing it to the
+# Teams SDK's adapter.
+_fastapi_app = FastAPI()
+setup_middleware(_fastapi_app)
+setup_exception_handlers(_fastapi_app)
+_fastapi_app.include_router(health_router)
 
 # client_id/client_secret/tenant_id are NOT auto-read from the environment by
 # App() — only DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS, SERVICE_URL, and
@@ -17,13 +36,16 @@ app = App(
     client_id=os.getenv("MICROSOFT_APP_ID"),
     client_secret=os.getenv("MICROSOFT_APP_PASSWORD"),
     tenant_id=os.getenv("MICROSOFT_APP_TENANT_ID"),
+    http_server_adapter=FastAPIAdapter(app=_fastapi_app),
 )
 
 
 @app.on_message
 async def on_message(ctx: ActivityContext[MessageActivity]) -> None:
-    """Handle every inbound Teams message activity; act only when the bot
-    was directly @mentioned, per the design (see ../demo-scope.md).
+    """Handle every inbound Teams message activity.
+
+    Acts only when the bot was directly @mentioned, per the design (see
+    ../demo-scope.md).
 
     Registered as the `microsoft_teams.apps` message handler via the
     `@app.on_message` decorator, so it's invoked by the SDK for every

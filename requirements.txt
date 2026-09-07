@@ -30,3 +30,11 @@ typing_extensions==4.16.0
 urllib3==2.7.0
 uvicorn==0.52.4
 pytest==8.3.4
+
+# dev tooling (lint/format/pre-commit, ported from org fastapi-boilerplate)
+black==26.1.0
+isort==7.0.0
+flake8==7.3.0
+flake8-docstrings
+flake8-bugbear
+pre-commit==4.0.1
