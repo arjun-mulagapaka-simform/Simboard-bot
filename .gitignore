@@ -2,4 +2,4 @@
 .env
 __pycache__/
 *.pyc
-appPackage/teams-app.zip
+appPackage/appPackage.zip
