@@ -7,52 +7,81 @@ No Graph calls, no attachment content, no quoted-message content.
 
 import re
 
-from microsoft_teams.apps import ActivityContext
 from microsoft_teams.api import MessageActivity
+from microsoft_teams.apps import ActivityContext
 
 from src.models.normalized_message import MentionedUser, NormalizedMessage
 
 HASHTAG_RE = re.compile(r"#(\w+)")
+_AT_TAG_RE = re.compile(r"</?at>")
 
 
-def _account_to_mentioned_user(account) -> MentionedUser:
-    """Convert an SDK `Account` (sender/recipient/mentioned) into our
-    `MentionedUser` model, keeping only the fields we rely on downstream.
+def _account_to_mentioned_user(account, name: str | None = None) -> MentionedUser:
+    """Convert an SDK `Account` into our `MentionedUser` model.
+
+    Covers sender/recipient/mentioned accounts, keeping only the fields we
+    rely on downstream.
+
+    Args:
+        account: The SDK `Account` object.
+        name: Display name to use instead of `account.name`. Needed for a
+            multi-word mention (see `_extract_other_mentions`): real Teams
+            was observed setting `mentioned.name` to only one word of the
+            name (matching that entity's `.text`), not the full name —
+            contrary to this module's prior assumption. Defaults to
+            `account.name`, which is still correct for a single-word name
+            (e.g. `activity.from_`, which isn't split into entities).
     """
     return MentionedUser(
         id=account.id,
         aad_object_id=getattr(account, "aad_object_id", None),
-        name=account.name,
+        name=name if name is not None else account.name,
     )
 
 
 def _extract_other_mentions(activity: MessageActivity) -> list[MentionedUser]:
-    """Pull every @mentioned user out of an activity except the bot itself,
-    de-duplicated by id (a multi-word display name produces multiple raw
-    mention entities for the same person — see inline note below).
+    """Pull every @mentioned user out of an activity except the bot itself.
+
+    De-duplicated by id — a multi-word display name produces multiple raw
+    mention entities for the same person (see inline note below).
     """
-    bot_mention = activity.get_account_mention(activity.recipient.id)
+    # Exclude by mentioned.id, not by `is not activity.get_account_mention(...)`
+    # — the bot's own multi-word display name is split across several
+    # entities sharing its id (same as any other mentioned user's), and
+    # `get_account_mention` only returns the first of them, so comparing
+    # against that single entity object left the rest through as a bogus
+    # "other mention" (observed 2026-09-08: bot named "Mention Bot POC"
+    # produced a spurious mention "Bot POC").
     other_mention_entities = [
         e
         for e in (activity.entities or [])
-        if e.type == "mention" and e is not bot_mention
+        if e.type == "mention" and e.mentioned.id != activity.recipient.id
     ]
 
     # Teams splits a multi-word display name (e.g. "Prerak Dave") into
-    # multiple mention entities that share the same mentioned.id, each
-    # carrying one word in .text. Group by id to reconstruct one
-    # MentionedUser per person (name comes from `mentioned.name`, which is
-    # already the full display name — unlike the raw per-word `.text`).
-    seen: dict[str, MentionedUser] = {}
+    # multiple mention entities sharing the same mentioned.id. Confirmed
+    # against real Teams (2026-09-08): each split entity carries only its
+    # own word in BOTH `.text` and `.mentioned.name` (name="Prerak"/
+    # text="<at>Prerak</at>", then name="Dave"/text="<at>Dave</at>") — so
+    # the full name must be reconstructed by joining each id's entities'
+    # `.text` in order; `.mentioned.name` alone is not the full name.
+    name_words: dict[str, list[str]] = {}
+    accounts: dict[str, object] = {}
     for e in other_mention_entities:
-        seen.setdefault(e.mentioned.id, _account_to_mentioned_user(e.mentioned))
-    return list(seen.values())
+        accounts.setdefault(e.mentioned.id, e.mentioned)
+        name_words.setdefault(e.mentioned.id, []).append(_AT_TAG_RE.sub("", e.text or "").strip())
+
+    return [
+        _account_to_mentioned_user(accounts[mentioned_id], name=" ".join(words))
+        for mentioned_id, words in name_words.items()
+    ]
 
 
 def normalize(ctx: ActivityContext[MessageActivity]) -> NormalizedMessage:
-    """Convert a raw Teams message activity into a `NormalizedMessage`,
-    bounded to what's reliably extractable per ../../message-schema.md
-    (no Graph calls, no attachment/quoted-message content).
+    """Convert a raw Teams message activity into a `NormalizedMessage`.
+
+    Bounded to what's reliably extractable per ../../message-schema.md (no
+    Graph calls, no attachment/quoted-message content).
 
     Args:
         ctx: The activity context for an inbound "message" activity where
