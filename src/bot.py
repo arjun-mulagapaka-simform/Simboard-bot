@@ -16,6 +16,7 @@ from src.core.exceptions import setup_exception_handlers
 from src.core.health import router as health_router
 from src.core.logging import setup_logging
 from src.core.middleware import setup_middleware
+from src.pipeline.validate_event import ValidationOutcome, validate
 
 setup_logging()
 
@@ -62,19 +63,17 @@ async def on_message(ctx: ActivityContext[MessageActivity]) -> None:
         return value the SDK inspects.
 
     Side effects:
-        If the bot was not @mentioned, does nothing and returns early.
-        Otherwise delegates to `workflow.handle(ctx)`, which runs the
-        extraction/resolution/card-creation pipeline and sends the
-        resulting text back on the same conversation itself (via
-        `ctx.send`, not `ctx.reply` — `ctx.reply()` prepends a Teams-only
-        "quoted message" placeholder that the Bot Framework Emulator's
-        chat window doesn't render).
+        Runs Step 1 (`validate_event.validate`) first; any outcome other
+        than `ACCEPT` (not mentioned, malformed activity, or a duplicate
+        delivery of an already-claimed `activity.id`) drops the activity
+        silently, with no reply. On `ACCEPT`, delegates to
+        `workflow.handle(ctx)`, which runs the extraction/resolution/
+        card-creation pipeline and sends the resulting text back on the
+        same conversation itself (via `ctx.send`, not `ctx.reply` —
+        `ctx.reply()` prepends a Teams-only "quoted message" placeholder
+        that the Bot Framework Emulator's chat window doesn't render).
     """
-    activity = ctx.activity
-
-    if not activity.is_recipient_mentioned():
-        # Not mentioned — per the design, the bot should only act when
-        # directly @mentioned. Ignore everything else.
+    if validate(ctx) is not ValidationOutcome.ACCEPT:
         return
 
     await workflow.handle(ctx)

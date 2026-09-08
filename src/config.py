@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     confidence_floor: float = 0.6
     fuzzy_match_floor: float = 0.82
     max_clarification_turns: int = 2
+    event_dedup_ttl_seconds: float = 300.0
 
 
 settings = Settings()
