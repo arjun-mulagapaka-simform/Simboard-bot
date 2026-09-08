@@ -23,9 +23,14 @@ is no signal for it in the message — never guess a value just to fill the \
 field. Set "confidence" (0-1) to reflect how sure you are the value is \
 correct; "unset" fields should carry a low confidence. `project_hint` and \
 `board_hint` should come only from hashtags in the message, never invented, \
-and must be copied verbatim (minus the leading "#") — never shortened, \
-normalized, or paraphrased, since even small changes (e.g. "#sprint-4" -> \
-"sprint") can break exact/fuzzy matching downstream. \
+and must be copied character-for-character from the hashtag token itself \
+(everything after the leading "#", up to the next whitespace/punctuation \
+that ends it) — never shortened, normalized, or paraphrased, and never \
+replaced by a similar-looking plain word elsewhere in the message even if \
+it seems like a better-known name for the same thing. For example, if the \
+message contains "#billing-le" and, separately, the plain word "billing" \
+later in the sentence, `project_hint` must still be exactly "billing-le" — \
+the later plain-text word is not the hashtag and must not overwrite it. \
 When there is exactly one hashtag and nothing else distinguishes a board \
 from a project, treat it as `project_hint` — `project` is the required \
 field and the far more common single-hashtag intent; only use `board_hint` \

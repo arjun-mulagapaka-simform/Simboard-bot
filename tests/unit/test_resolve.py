@@ -2,14 +2,53 @@
 
 Runs against simboard_client's fixture data (onboarding/billing projects,
 sprint-42/q3-launch boards, Prerak Dave/Arjun Mulagapaka users). No network
-calls.
+calls — the LLM re-rank path is mocked via `_patch_rerank`, defaulting to
+"couldn't decide" so existing ambiguity tests keep their prior behavior.
 """
 
-import pytest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
+from openai import APIConnectionError
+
+from src.integrations import azure_openai_client
 from src.models.extraction import ExtractionResult, FieldValue
 from src.models.normalized_message import MentionedUser, NormalizedMessage
+from src.pipeline import resolve as resolve_module
 from src.pipeline.resolve import _match_by_name, apply_clarification, resolve
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch):
+    monkeypatch.setattr(azure_openai_client.asyncio, "sleep", AsyncMock())
+
+
+def _fake_rerank_completion(chosen_name: str | None, confidence: float = 0.9, evidence: str = ""):
+    parsed = SimpleNamespace(chosen_name=chosen_name, confidence=confidence, evidence=evidence)
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
+
+
+def _patch_rerank(
+    monkeypatch, chosen_name: str | None = None, confidence: float = 0.9, evidence: str = ""
+):
+    """Mock the LLM re-rank call. Defaults to "couldn't decide" (chosen_name=None).
+
+    `evidence` defaults to empty — pass a non-empty phrase alongside a
+    `chosen_name` to simulate a grounded pick (see `resolve._llm_rerank_candidate`,
+    which now discards any `chosen_name` accompanied by empty evidence).
+    """
+    parse_mock = AsyncMock(return_value=_fake_rerank_completion(chosen_name, confidence, evidence))
+    fake_client = SimpleNamespace(
+        beta=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse_mock)))
+    )
+    monkeypatch.setattr(resolve_module, "get_client", lambda: fake_client)
+    return parse_mock
+
+
+@pytest.fixture(autouse=True)
+def _default_rerank(monkeypatch):
+    _patch_rerank(monkeypatch, chosen_name=None)
 
 
 def _extraction(
@@ -210,3 +249,98 @@ def test_exact_match_takes_priority_over_fuzzy():
         {"id": "b", "name": "sprint-4y"},
     ]
     assert _match_by_name("sprint-4x", candidates, {}) == "a"
+
+
+# --- LLM re-rank path ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_resolves_ambiguous_board(monkeypatch):
+    _patch_rerank(monkeypatch, chosen_name="sprint-43", confidence=0.9, evidence="sprint-43")
+
+    draft = await resolve(
+        _extraction(project_hint="onboarding", board_hint="sprint-4"),
+        _message(text="fix the bug on sprint-43 #onboarding"),
+    )
+
+    assert draft.board_id == "board-3"
+    assert "board_id" not in draft.unresolved_fields
+    assert "board_id" not in draft.ambiguous_candidates
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_low_confidence_stays_ambiguous(monkeypatch):
+    _patch_rerank(monkeypatch, chosen_name="sprint-43", confidence=0.4, evidence="sprint-43")
+
+    draft = await resolve(_extraction(project_hint="onboarding", board_hint="sprint-4"), _message())
+
+    assert draft.board_id is None
+    assert "board_id" in draft.unresolved_fields
+    assert set(draft.ambiguous_candidates["board_id"]) == {"sprint-42", "sprint-43"}
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_unknown_name_stays_ambiguous(monkeypatch):
+    # LLM names something that isn't one of the actual candidates — treated
+    # as a non-answer rather than trusted blindly.
+    _patch_rerank(monkeypatch, chosen_name="sprint-99", confidence=0.95, evidence="sprint-99")
+
+    draft = await resolve(_extraction(project_hint="onboarding", board_hint="sprint-4"), _message())
+
+    assert draft.board_id is None
+    assert "board_id" in draft.unresolved_fields
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_evidence_that_is_just_the_hint_stays_ambiguous(monkeypatch):
+    # Regression test: the LLM cited the ambiguous hint itself ("billing-le")
+    # as "evidence" for picking "billing-legacy" — it matched every
+    # candidate precisely because it's the ambiguous hint, so restating it
+    # proves nothing and must not be trusted even at high confidence.
+    _patch_rerank(monkeypatch, chosen_name="sprint-43", confidence=0.9, evidence="sprint-4")
+
+    draft = await resolve(_extraction(project_hint="onboarding", board_hint="sprint-4"), _message())
+
+    assert draft.board_id is None
+    assert set(draft.ambiguous_candidates["board_id"]) == {"sprint-42", "sprint-43"}
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_empty_evidence_stays_ambiguous_even_with_high_confidence(monkeypatch):
+    # Regression test: a live Teams test showed the LLM naming a candidate
+    # with high confidence but no actual textual basis (e.g. defaulting to
+    # a "more common"-seeming project) — evidence must be non-empty for the
+    # pick to be trusted at all, confidence alone isn't enough.
+    _patch_rerank(monkeypatch, chosen_name="sprint-43", confidence=0.95, evidence="")
+
+    draft = await resolve(_extraction(project_hint="onboarding", board_hint="sprint-4"), _message())
+
+    assert draft.board_id is None
+    assert set(draft.ambiguous_candidates["board_id"]) == {"sprint-42", "sprint-43"}
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_failure_falls_back_to_ambiguous(monkeypatch):
+    parse_mock = AsyncMock(
+        side_effect=APIConnectionError(
+            request=SimpleNamespace(method="POST", url="https://example.com")
+        )
+    )
+    fake_client = SimpleNamespace(
+        beta=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse_mock)))
+    )
+    monkeypatch.setattr(resolve_module, "get_client", lambda: fake_client)
+
+    draft = await resolve(_extraction(project_hint="onboarding", board_hint="sprint-4"), _message())
+
+    assert draft.board_id is None
+    assert set(draft.ambiguous_candidates["board_id"]) == {"sprint-42", "sprint-43"}
+
+
+@pytest.mark.asyncio
+async def test_llm_rerank_not_called_for_unambiguous_match(monkeypatch):
+    parse_mock = _patch_rerank(monkeypatch, chosen_name=None)
+
+    await resolve(_extraction(project_hint="onboarding"), _message())
+
+    parse_mock.assert_not_called()

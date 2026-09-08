@@ -3,11 +3,15 @@
 Resolution is layered per ../../bot-docs/01-research-and-requirements.md
 §4.2 / ../../bot-docs/06-agent-workflow.md §Step 4: alias table -> exact
 (case-insensitive) name match -> fuzzy similarity (floor
-`settings.fuzzy_match_floor`). A single fuzzy candidate at/above the floor
-resolves the field; 2+ surviving candidates are left unresolved rather than guessed; their
-names are surfaced via `CardDraft.ambiguous_candidates` so
+`settings.fuzzy_match_floor`) -> LLM re-rank of the surviving fuzzy
+candidates. A single fuzzy candidate at/above the floor resolves the field
+outright; 2+ surviving candidates are handed to one LLM call
+(`_llm_rerank_candidate`) that picks a winner if confident
+(`settings.rerank_confidence_floor`) using the original message text as
+context, otherwise the field stays unresolved and its names are surfaced
+via `CardDraft.ambiguous_candidates` so
 `pipeline.clarify.build_clarification_prompt` can ask a specific
-"did you mean X or Y?" question via an LLM call instead of picking one.
+"did you mean X or Y?" question instead.
 
 Assignee resolution here matches `NormalizedMessage.other_mentions` (a
 structural, deterministic signal from the Teams activity itself — no LLM
@@ -16,13 +20,20 @@ simboard_client.list_users() (a name/email directory), NOT via Graph —
 graph_client is intentionally excluded from Phase A per user decision.
 """
 
+import logging
 from difflib import SequenceMatcher
+
+from openai import OpenAIError
 
 from src.config import settings
 from src.integrations import simboard_client
+from src.integrations.azure_openai_client import call_with_retry, get_client
 from src.models.card_draft import CardDraft
 from src.models.extraction import ExtractionResult
 from src.models.normalized_message import NormalizedMessage
+from src.models.rerank import RerankResult
+
+logger = logging.getLogger("resolve")
 
 # Hardcoded for Phase A testing — maps a hashtag/mention alias to a fixture
 # name in simboard_client. Real alias management (per-org, admin-configured)
@@ -49,15 +60,15 @@ def _fuzzy_candidates(key: str, candidates: list[dict], floor: float) -> list[di
 
 def _match_with_ambiguity(
     hint: str | None, candidates: list[dict], aliases: dict[str, str]
-) -> tuple[str | None, list[str]]:
+) -> tuple[str | None, list[dict]]:
     """Resolve a free-text hint to one candidate's id, surfacing ambiguity.
 
     Tries, in order: the alias table, an exact (case-insensitive) name
     match, then fuzzy similarity (`settings.fuzzy_match_floor`). A fuzzy
     match only resolves the field when exactly one candidate survives the
-    floor; 2+ surviving candidates are ambiguous and left unresolved (see
-    module docstring), and their names are returned so a caller can ask a
-    specific "did you mean X or Y?" question instead of a flat miss.
+    floor; 2+ surviving candidates are ambiguous and left unresolved here
+    (see module docstring) — the caller is expected to try
+    `_llm_rerank_candidate` on them before giving up.
 
     Args:
         hint: The hashtag/mention text to resolve, or `None`/empty if no
@@ -68,11 +79,11 @@ def _match_with_ambiguity(
             `name` (also matched case-insensitively).
 
     Returns:
-        A `(id, ambiguous_names)` tuple. `id` is the matching candidate's
-        `"id"` via alias/exact/unambiguous-fuzzy match, or `None` if `hint`
-        is empty or nothing matched. `ambiguous_names` is non-empty only
-        when `id` is `None` because 2+ fuzzy candidates survived the floor
-        — otherwise it's `[]`.
+        A `(id, ambiguous_candidates)` tuple. `id` is the matching
+        candidate's `"id"` via alias/exact/unambiguous-fuzzy match, or
+        `None` if `hint` is empty or nothing matched. `ambiguous_candidates`
+        is non-empty only when `id` is `None` because 2+ fuzzy candidates
+        survived the floor — otherwise it's `[]`.
     """
     if not hint:
         return None, []
@@ -88,7 +99,7 @@ def _match_with_ambiguity(
     if len(fuzzy) == 1:
         return fuzzy[0]["id"], []
     if len(fuzzy) >= 2:
-        return None, [c["name"] for c in fuzzy]
+        return None, fuzzy
 
     return None, []
 
@@ -102,8 +113,140 @@ def _match_by_name(hint: str | None, candidates: list[dict], aliases: dict[str, 
     return matched_id
 
 
+_RERANK_SYSTEM_PROMPT = """A user referred to something by a short name in a \
+Teams message, and more than one real record matched it closely enough to \
+be ambiguous. First find "evidence": an exact word or phrase copied from \
+the message, OTHER THAN the short name itself, that names or clearly \
+points to one specific candidate over the others. The short name that \
+caused the ambiguity is never valid evidence for resolving it — it matched \
+multiple candidates precisely because it doesn't distinguish between them; \
+restating it, or a substring of it, is not a new signal. If you cannot \
+find a genuinely separate phrase like that, set "evidence" to an empty \
+string and "chosen_name" to null — do not guess based on which candidate \
+seems more common, more recent, or more likely in general. Only when \
+"evidence" is a real phrase distinct from the short name should \
+"chosen_name" name the candidate it points to. A wrong guess is worse \
+than asking the user directly."""
+
+
+async def _llm_rerank_candidate(hint: str, candidates: list[dict], context_text: str) -> str | None:
+    """Ask the LLM to pick the intended candidate among 2+ fuzzy matches.
+
+    Called only when 2+ candidates survive the fuzzy floor
+    (bot-docs/06-agent-workflow.md §Step 4, resolution order (d)) — never
+    on zero candidates, and never in place of an exact/alias match.
+
+    Args:
+        hint: The original free-text hint (hashtag or mention name) that
+            produced these candidates.
+        candidates: The 2+ fuzzy-surviving candidate dicts (`"id"`/`"name"`).
+        context_text: The full original message text, given to the LLM as
+            the only disambiguating context (no conversation history, per
+            bot-docs §06 Step 3's prompt-contract precedent).
+
+    Returns:
+        The winning candidate's `"id"` if the LLM names one of the given
+        candidates with confidence at/above `settings.rerank_confidence_floor`,
+        else `None` — meaning the field stays ambiguous and should fall
+        back to asking the user (see `pipeline.clarify`).
+
+    Side effects:
+        Makes an outbound LLM API call. Failures (timeout, rate limit,
+        auth) are logged and treated as "couldn't decide" rather than
+        raised — bot-docs §06 Step 4's failure-condition guidance is to
+        not block the workflow on a slow/unavailable lookup, so this falls
+        back to ambiguous instead of failing the whole resolve() call.
+    """
+    names = [c["name"] for c in candidates]
+    user_content = (
+        f'Message: "{context_text}"\n'
+        f'The user referred to something like "{hint}".\n'
+        f"Candidates: {', '.join(names)}"
+    )
+
+    try:
+        completion = await call_with_retry(
+            lambda: get_client().beta.chat.completions.parse(
+                model=settings.azure_openai_deployment,
+                messages=[
+                    {"role": "system", "content": _RERANK_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                response_format=RerankResult,
+                # gpt-5-mini is a reasoning model — hidden reasoning tokens draw
+                # from this same budget before any visible output; 400 was
+                # observed live to be exhausted by reasoning alone, returning
+                # an empty/unparseable response (same failure mode fixed in
+                # clarify.py's candidate-question call).
+                max_completion_tokens=800,
+            )
+        )
+    except OpenAIError as exc:
+        logger.warning("rerank call failed, leaving field ambiguous: %s", exc)
+        return None
+
+    parsed = completion.choices[0].message.parsed
+    if parsed is None or parsed.chosen_name is None or not parsed.evidence.strip():
+        return None
+    if parsed.confidence < settings.rerank_confidence_floor:
+        return None
+
+    # The ambiguous hint itself is never valid evidence — it matched every
+    # surviving candidate, so restating it (or a shorter substring of it)
+    # proves nothing about which one the user meant. Observed live: the
+    # LLM cited evidence="billing-le" (the hint verbatim) to justify
+    # picking "billing-legacy" with high confidence, with no other signal
+    # in the message. Guard against this in code, not just the prompt.
+    # (Evidence that's a *superset* of the hint, e.g. "sprint-43" for hint
+    # "sprint-4", is a legitimate, more-specific signal and stays valid.)
+    evidence_key = parsed.evidence.strip().lower()
+    hint_key = hint.strip().lower()
+    if evidence_key in hint_key:
+        logger.warning(
+            "rerank evidence %r is just the ambiguous hint %r restated, discarding pick",
+            parsed.evidence,
+            hint,
+        )
+        return None
+
+    for candidate in candidates:
+        if candidate["name"] == parsed.chosen_name:
+            logger.info(
+                "rerank chose %r (id=%s) from %s on evidence %r, confidence=%.2f",
+                candidate["name"],
+                candidate["id"],
+                names,
+                parsed.evidence,
+                parsed.confidence,
+            )
+            return candidate["id"]
+    return None
+
+
+async def _resolve_with_rerank(
+    hint: str | None, candidates: list[dict], aliases: dict[str, str], context_text: str
+) -> tuple[str | None, list[str]]:
+    """`_match_with_ambiguity` plus the LLM re-rank fallback on ambiguity.
+
+    Returns:
+        A `(id, ambiguous_names)` tuple — same shape as
+        `_match_with_ambiguity`, except `ambiguous_names` (plain names, for
+        `CardDraft.ambiguous_candidates`) is only non-empty when both the
+        fuzzy layer AND the LLM re-rank failed to settle on one candidate.
+    """
+    matched_id, ambiguous = _match_with_ambiguity(hint, candidates, aliases)
+    if matched_id is not None or not ambiguous:
+        return matched_id, []
+
+    reranked_id = await _llm_rerank_candidate(hint, ambiguous, context_text)
+    if reranked_id is not None:
+        return reranked_id, []
+
+    return None, [c["name"] for c in ambiguous]
+
+
 async def _resolve_project_and_board(
-    extraction: ExtractionResult,
+    extraction: ExtractionResult, message: NormalizedMessage
 ) -> tuple[str | None, str | None, list[str], dict[str, list[str]]]:
     """Resolve `project_hint`/`board_hint`, board scoped to the project.
 
@@ -115,8 +258,8 @@ async def _resolve_project_and_board(
     ambiguous: dict[str, list[str]] = {}
 
     projects = await simboard_client.list_projects()
-    project_id, project_candidates = _match_with_ambiguity(
-        extraction.project_hint.value, projects, _PROJECT_ALIASES
+    project_id, project_candidates = await _resolve_with_rerank(
+        extraction.project_hint.value, projects, _PROJECT_ALIASES, message.text
     )
     if project_id is None:
         unresolved.append("project_id")
@@ -126,8 +269,8 @@ async def _resolve_project_and_board(
     board_id = None
     if project_id is not None and extraction.board_hint.value:
         boards = await simboard_client.list_boards(project_id)
-        board_id, board_candidates = _match_with_ambiguity(
-            extraction.board_hint.value, boards, _BOARD_ALIASES
+        board_id, board_candidates = await _resolve_with_rerank(
+            extraction.board_hint.value, boards, _BOARD_ALIASES, message.text
         )
         if board_id is None:
             unresolved.append("board_id")
@@ -152,7 +295,7 @@ async def _resolve_assignees(
     ambiguous: dict[str, list[str]] = {}
 
     for mention in message.other_mentions:
-        user_id, user_candidates = _match_with_ambiguity(mention.name, users, {})
+        user_id, user_candidates = await _resolve_with_rerank(mention.name, users, {}, message.text)
         if user_id is None:
             field = f"assignee:{mention.name}"
             unresolved.append(field)
@@ -169,8 +312,9 @@ async def resolve(extraction: ExtractionResult, message: NormalizedMessage) -> C
 
     Covers project/board hashtags (from `extraction`) and assignees (from
     `message.other_mentions`, a structural signal, not LLM-derived — see
-    module docstring). Phase A: exact/alias-table matching only (see
-    module docstring) — no fuzzy similarity or LLM reranker yet.
+    module docstring). Resolution is layered per the module docstring:
+    alias/exact match, then fuzzy similarity, then an LLM re-rank of 2+
+    surviving fuzzy candidates.
 
     A board only exists inside a project, so board resolution is only
     attempted once a project has actually been resolved — an unresolved
@@ -196,7 +340,7 @@ async def resolve(extraction: ExtractionResult, message: NormalizedMessage) -> C
         (stubbed with fixture data in Phase A).
     """
     project_id, board_id, project_board_unresolved, project_board_ambiguous = (
-        await _resolve_project_and_board(extraction)
+        await _resolve_project_and_board(extraction, message)
     )
     assignee_user_ids, assignee_unresolved, assignee_ambiguous = await _resolve_assignees(message)
 
