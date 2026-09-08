@@ -22,7 +22,16 @@ it directly, "inferred" if you derived it from context, or "unset" if there \
 is no signal for it in the message — never guess a value just to fill the \
 field. Set "confidence" (0-1) to reflect how sure you are the value is \
 correct; "unset" fields should carry a low confidence. `project_hint` and \
-`board_hint` should come only from hashtags in the message, never invented."""
+`board_hint` should come only from hashtags in the message, never invented, \
+and must be copied verbatim (minus the leading "#") — never shortened, \
+normalized, or paraphrased, since even small changes (e.g. "#sprint-4" -> \
+"sprint") can break exact/fuzzy matching downstream. \
+When there is exactly one hashtag and nothing else distinguishes a board \
+from a project, treat it as `project_hint` — `project` is the required \
+field and the far more common single-hashtag intent; only use `board_hint` \
+for a hashtag that is clearly a sub-grouping of an already-identified \
+project (e.g. a sprint/bucket name alongside a separate project hashtag or \
+project name mentioned in plain text)."""
 
 
 async def extract(message: NormalizedMessage) -> ExtractionResult:

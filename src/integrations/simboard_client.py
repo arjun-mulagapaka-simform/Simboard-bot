@@ -1,7 +1,7 @@
-"""SimBoard-facing client. STUB for Phase A — real auth mechanism, endpoint
-schema, and bucket (board/list) mapping are open questions
-(see ../../pm-questionnaire.md, Part A Q1/Q2 and Part B).
+"""SimBoard-facing client. STUB for Phase A.
 
+Real auth mechanism, endpoint schema, and bucket (board/list) mapping are
+open questions (see ../../pm-questionnaire.md, Part A Q1/Q2 and Part B).
 Every function here mirrors the eventual real client's signature so
 workflow.py never needs to change when the real implementation lands.
 """
@@ -11,11 +11,23 @@ from src.models.card_draft import CardDraft
 _FIXTURE_PROJECTS = [
     {"id": "proj-1", "name": "onboarding"},
     {"id": "proj-2", "name": "billing"},
+    # Near-duplicate of proj-2, added to exercise the fuzzy-match ambiguity
+    # path (2+ candidates >= settings.fuzzy_match_floor, none exact) — see
+    # pipeline.resolve._match_with_ambiguity. A hashtag like "#billing-le"
+    # scores ~0.82 against "billing" and ~0.83 against "billing-legacy",
+    # so neither wins outright and both surface via
+    # CardDraft.ambiguous_candidates instead of guessing one.
+    {"id": "proj-3", "name": "billing-legacy"},
 ]
 
 _FIXTURE_BOARDS = [
     {"id": "board-1", "project_id": "proj-1", "name": "sprint-42"},
     {"id": "board-2", "project_id": "proj-2", "name": "q3-launch"},
+    # Same ambiguity purpose as proj-3 above, but for board resolution: a
+    # hashtag like "#sprint-4" scores ~0.94 against both "sprint-42" and
+    # "sprint-43" (same project, so board lookup isn't blocked by an
+    # unresolved project).
+    {"id": "board-3", "project_id": "proj-1", "name": "sprint-43"},
 ]
 
 _FIXTURE_USERS = [
@@ -88,10 +100,9 @@ async def list_boards(project_id: str | None = None) -> list[dict]:
 
 
 async def list_users() -> list[dict]:
-    """Fetch all SimBoard users, for display-name matching of @mentions to
-    real SimBoard accounts.
+    """Fetch all SimBoard users, for display-name matching of @mentions.
 
-    Used by `pipeline.resolve.resolve` in place of a Graph/AAD lookup —
+    Matched against real SimBoard accounts. Used by `pipeline.resolve.resolve` in place of a Graph/AAD lookup —
     Phase A resolves assignees purely by matching Teams display names
     against this directory (see module docstring).
 
