@@ -1,21 +1,22 @@
-"""Orchestrator (Task 8): normalize -> extract -> resolve -> confidence gate
--> clarify (loop) or create. bot.py should call handle() and send back
-whatever text it returns.
+"""Orchestrator (Task 8).
+
+normalize -> extract -> resolve -> confidence gate -> clarify (loop) or
+create. bot.py should call handle() and send back whatever text it
+returns.
 """
 
-from microsoft_teams.apps import ActivityContext
 from microsoft_teams.api import MessageActivity
+from microsoft_teams.apps import ActivityContext
 
+from src.integrations import simboard_client
 from src.pipeline import clarify, confidence, extract, normalize, resolve
 from src.state.workflow_store import workflow_store
-from src.integrations import simboard_client
 
 
 async def handle(ctx: ActivityContext[MessageActivity]) -> None:
-    """Run the full Phase A pipeline for one inbound @mention and send the
-    resulting reply back on the same conversation.
+    """Run the full Phase A pipeline for one inbound @mention.
 
-    Two paths, chosen by whether this message is a direct reply to the
+    Sends the resulting reply back on the same conversation. Two paths, chosen by whether this message is a direct reply to the
     bot's own pending clarification question — NOT merely whether a
     pending draft exists for the conversation (see item 7a in
     ../../todo.md for why conversation id alone was insufficient and
@@ -62,7 +63,7 @@ async def handle(ctx: ActivityContext[MessageActivity]) -> None:
 
     is_clarification_reply = (
         pending_draft is not None
-        and pending_draft.unresolved_fields
+        and (pending_draft.unresolved_fields or pending_draft.pending_confirmation_fields)
         and message.reply_to_id is not None
         and message.reply_to_id == pending_draft.clarification_prompt_id
     )
@@ -72,10 +73,10 @@ async def handle(ctx: ActivityContext[MessageActivity]) -> None:
         draft = await resolve.apply_clarification(pending_draft, message)
     else:
         extraction = await extract.extract(message)
-        draft = await resolve.resolve(extraction, message.workflow_id)
+        draft = await resolve.resolve(extraction, message)
 
     if confidence.needs_clarification(draft):
-        prompt_text = clarify.build_clarification_prompt(draft)
+        prompt_text = await clarify.build_clarification_prompt(draft)
         sent = await ctx.send(prompt_text)
         draft.clarification_prompt_id = sent.id
         workflow_store.save(draft)

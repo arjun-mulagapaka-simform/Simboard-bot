@@ -1,9 +1,11 @@
 """Resolved + validated card draft — ready for create_card() once approved."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CardDraft(BaseModel):
+    """Resolved + validated card draft — ready for create_card() once approved."""
+
     workflow_id: str
     title: str
     description: str | None
@@ -11,7 +13,35 @@ class CardDraft(BaseModel):
     project_id: str | None  # resolved, not the hashtag text
     board_id: str | None
     assignee_user_ids: list[str]
-    unresolved_fields: list[str]  # fields still needing clarification/approval
+    unresolved_fields: list[str]  # fields with no resolved value — need an open clarifying question
+    pending_confirmation_fields: list[str] = Field(default_factory=list)
+    """Fields that DO have a resolved value but still need an explicit
+    yes/no from the user before create_card() runs — distinct from
+    `unresolved_fields` (no value at all). Two cases populate this (see
+    ../pipeline/confidence.py):
+    - "assignee" whenever any assignee resolved, unconditionally — a
+      security control (bot-docs/05-permissions-and-security.md §6.4), not
+      a confidence heuristic.
+    - any of "title"/"project_id"/"board_id" whose extraction confidence
+      fell below `settings.confidence_floor`, per `field_confidences`.
+    """
+    field_confidences: dict[str, float] = Field(default_factory=dict)
+    """Extraction confidence (0-1) for whichever of "title"/"project_id"/
+    "board_id" the LLM gave a confidence score for, keyed by the
+    `CardDraft` field name (not the extraction hint name) so
+    `pipeline.confidence` can look it up directly. Populated in
+    `pipeline.resolve.resolve`, not touched by `apply_clarification`.
+    """
+    ambiguous_candidates: dict[str, list[str]] = Field(default_factory=dict)
+    """For an entry in `unresolved_fields` that is ambiguous (2+ fuzzy
+    candidates survived `settings.fuzzy_match_floor`, none dominant) rather
+    than a flat miss (zero candidates), the candidates' display names,
+    keyed by the same field name used in `unresolved_fields` (including the
+    `"assignee:{mention name}"` form). Populated in `pipeline.resolve`.
+    `pipeline.clarify.build_clarification_prompt` uses this to generate a
+    specific "did you mean X or Y?" question via an LLM call instead of the
+    generic template, per bot-docs/06-agent-workflow.md §Step 7.
+    """
     clarification_prompt_id: str | None = None
     """Activity id of the bot's own last-sent clarification question for
     this workflow (from `SentActivity.id`, see `workflow.handle`). A later

@@ -1,0 +1,71 @@
+# Pre-commit hooks configuration
+# See https://pre-commit.com for more information
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-case-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, master]
+      - id: check-merge-conflict
+      - id: check-ast
+      - id: debug-statements
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/psf/black
+    rev: 26.1.0
+    hooks:
+      - id: black
+        language_version: python3
+        args: [--line-length=100]
+
+  - repo: https://github.com/pycqa/isort
+    rev: 7.0.0
+    hooks:
+      - id: isort
+        args: [--profile=black, --line-length=100]
+
+  # Flake8 (incl. docstring enforcement via flake8-docstrings) — enabled here
+  # since this project's docstring rule (.claude/rules/docstrings.md) should
+  # be checked mechanically rather than by review discipline alone.
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.3.0
+    hooks:
+      - id: flake8
+        args:
+          - '--max-line-length=100'
+          - '--extend-ignore=E203,E402,E501,W503'
+        additional_dependencies: [flake8-docstrings, flake8-bugbear]
+
+exclude: |
+  (?x)^(
+      \.git/.*|
+      \.venv/.*|
+      venv/.*|
+      \.pytest_cache/.*|
+      __pycache__/.*|
+      \.mypy_cache/.*|
+      \.coverage|
+      htmlcov/.*|
+      dist/.*|
+      build/.*|
+      \.eggs/.*|
+      .*\.egg-info/.*
+  )$
+
+default_language_version:
+  python: python3.12
+
+fail_fast: false
+minimum_pre_commit_version: '2.20.0'
