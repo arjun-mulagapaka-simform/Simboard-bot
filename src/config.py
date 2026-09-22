@@ -12,9 +12,11 @@ class Settings(BaseSettings):
     azure_openai_deployment: str = "gpt-5-mini"
     azure_openai_api_version: str = "v1"
     azure_openai_api_key: str = ""
+    simboard_base_url: str = ""
+    simboard_username: str = ""
+    simboard_password: str = ""
     confidence_floor: float = 0.6
     fuzzy_match_floor: float = 0.82
-    rerank_confidence_floor: float = 0.75
     max_clarification_turns: int = 2
     event_dedup_ttl_seconds: float = 300.0
 

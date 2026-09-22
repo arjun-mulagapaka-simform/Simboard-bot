@@ -1,18 +1,26 @@
-"""Output of the ingestion step (Task 3): what we can reliably pull from a
-single inbound Teams MessageActivity, per ../../message-schema.md's scope
-conclusions. No Graph lookups performed here.
+"""Output of the ingestion step (Task 3).
+
+What we can reliably pull from a single inbound Teams MessageActivity,
+per ../../message-schema.md's scope conclusions. No Graph lookups
+performed here.
 """
 
 from pydantic import BaseModel
 
 
 class MentionedUser(BaseModel):
+    """A sender or @mentioned user, as pulled off a Teams activity."""
+
     id: str  # channel-scoped id
     aad_object_id: str | None
     name: str
+    email: str | None = None  # not populated by plain Account — needs
+    # TeamsChannelAccount and/or RSC; see pipeline/normalize.py.
 
 
 class NormalizedMessage(BaseModel):
+    """A Teams MessageActivity reduced to the fields the pipeline needs."""
+
     workflow_id: str  # conversation.id — see pipeline/normalize.py docstring
     conversation_id: str
     text: str  # mentions already stripped

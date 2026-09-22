@@ -96,9 +96,26 @@ def _is_clarification_reply(activity: MessageActivity) -> bool:
         return False
 
     pending_draft = workflow_store.get(activity.conversation.id)
-    return (
+    is_match = (
         pending_draft is not None and activity.reply_to_id == pending_draft.clarification_prompt_id
     )
+
+    if not is_match:
+        # Debug-only: settles whether a genuine Teams "Reply" is being
+        # silently dropped by an id mismatch (live test 2026-09-18: a
+        # threaded reply produced no pipeline activity at all, 0.08s
+        # no-op) — either Teams' replyToId doesn't match the id
+        # `ctx.send()` returned for our own message, or there's no
+        # pending draft at all (e.g. it was already cleared/expired).
+        logger.info(
+            "reply_to_id=%s did not match pending clarification_prompt_id=%s "
+            "(pending_draft present=%s)",
+            activity.reply_to_id,
+            pending_draft.clarification_prompt_id if pending_draft is not None else None,
+            pending_draft is not None,
+        )
+
+    return is_match
 
 
 def _is_well_formed(activity: MessageActivity) -> bool:

@@ -4,6 +4,7 @@ Detects @mentions and delegates to the Phase A pipeline (src/workflow.py)
 for extraction/resolution/card creation.
 """
 
+import logging
 import os
 
 from fastapi import FastAPI
@@ -19,6 +20,8 @@ from src.core.middleware import setup_middleware
 from src.pipeline.validate_event import ValidationOutcome, validate
 
 setup_logging()
+
+logger = logging.getLogger("bot")
 
 # Build our own FastAPI instance (rather than letting FastAPIAdapter() default
 # to a bare one) so we can register the org's logging/security middleware,
@@ -72,8 +75,30 @@ async def on_message(ctx: ActivityContext[MessageActivity]) -> None:
         same conversation itself (via `ctx.send`, not `ctx.reply` —
         `ctx.reply()` prepends a Teams-only "quoted message" placeholder
         that the Bot Framework Emulator's chat window doesn't render).
+
+        `workflow.handle` already records an `ERROR` audit event and
+        re-raises on any exception (see its own docstring) — this handler
+        additionally catches that exception so the user isn't left with no
+        reply at all (previously: an unhandled exception here propagated
+        straight into the SDK's HTTP adapter with `ctx.send()` never
+        called, see DURABILITY-FIXES.md #3). The exception is logged, then
+        re-raised so the SDK's own error handling/status-code behavior
+        toward Teams is unchanged (retry semantics stay as they were —
+        this only adds a user-visible reply, it doesn't change what Teams
+        itself does with a failed delivery).
     """
     if validate(ctx) is not ValidationOutcome.ACCEPT:
         return
 
-    await workflow.handle(ctx)
+    try:
+        await workflow.handle(ctx)
+    except Exception:
+        logger.exception("unhandled error processing activity %s", ctx.activity.id)
+        try:
+            await ctx.send(
+                "Something went wrong processing your request. Please try again "
+                "in a moment, or resend your message."
+            )
+        except Exception:
+            logger.exception("failed to send error reply for activity %s", ctx.activity.id)
+        raise
