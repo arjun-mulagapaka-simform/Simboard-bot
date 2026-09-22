@@ -2,9 +2,9 @@
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.25/MicrosoftTeams.schema.json",
   "manifestVersion": "1.25",
   "version": "1.0.0",
-  "id": "c6a2a2e8-511a-492e-8a76-dd57f9fb24a6",
+  "id": "f9af047c-0517-47e9-82b3-1aef4ad6cfb5",
   "developer": {
-    "name": "MNS",
+    "name": "MNS Arjun",
     "websiteUrl": "https://example.com",
     "privacyUrl": "https://example.com/privacy",
     "termsOfUseUrl": "https://example.com/terms"
@@ -14,23 +14,37 @@
     "outline": "outline.png"
   },
   "name": {
-    "short": "Mention Bot POC",
-    "full": "Mention Capture Bot (POC)"
+    "short": "SimBoard",
+    "full": "SimBoard"
   },
   "description": {
-    "short": "POC bot that detects @mentions and echoes captured data.",
-    "full": "Proof-of-concept Teams bot for a ticket-creation pipeline. Currently only detects when it is @mentioned and replies with the captured message data — no extraction, entity resolution, or ticket creation yet."
+    "short": "TESTING ONLY - not for general use.",
+    "full": "RESTRICTED - FOR TESTING PURPOSES ONLY, NOT FOR GENERAL USE. SimBoard Teams bot: detects @mentions in a Teams message (1:1 chat, group chat, or channel), extracts a task description via LLM, resolves the mentioned assignee and message sender against SimBoard's user directory, and creates a SimBoard card. This app package, its permissions, and its bot registration are for internal testing and evaluation only."
   },
   "accentColor": "#464EB8",
   "bots": [
     {
-      "botId": "c6a2a2e8-511a-492e-8a76-dd57f9fb24a6",
-      "scopes": ["groupChat", "personal"],
+      "botId": "f9af047c-0517-47e9-82b3-1aef4ad6cfb5",
+      "scopes": ["personal", "groupChat", "team"],
       "supportsFiles": false,
       "isNotificationOnly": false
     }
   ],
   "permissions": ["identity", "messageTeamMembers"],
   "validDomains": [],
-  "supportsChannelFeatures": "tier1"
+  "supportsChannelFeatures": "tier1",
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        { "name": "TeamMember.Read.Group", "type": "Application" },
+        { "name": "ChatMember.Read.Chat", "type": "Application" },
+        { "name": "ChatMessage.Read.Chat", "type": "Application" },
+        { "name": "ChannelMessage.Read.Group", "type": "Application" }
+      ]
+    }
+  },
+  "webApplicationInfo": {
+    "id": "f9af047c-0517-47e9-82b3-1aef4ad6cfb5",
+    "resource": "api://f9af047c-0517-47e9-82b3-1aef4ad6cfb5"
+  }
 }
