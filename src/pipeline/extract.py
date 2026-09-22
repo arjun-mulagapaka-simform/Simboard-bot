@@ -21,16 +21,25 @@ message. For every field, set "provenance" to "explicit" if the user stated \
 it directly, "inferred" if you derived it from context, or "unset" if there \
 is no signal for it in the message — never guess a value just to fill the \
 field. Set "confidence" (0-1) to reflect how sure you are the value is \
-correct; "unset" fields should carry a low confidence. `project_hint` and \
+correct; "unset" fields should carry a low confidence. \
+`title` is the one exception to "never guess a value": it must never be \
+empty or "unset". If the user gave an explicit title, use it verbatim \
+("explicit" provenance, high confidence). Otherwise synthesize a short, \
+concise title (a few words, not a full sentence) that summarizes what the \
+card is about from the rest of the message — mark this "inferred" with a \
+confidence reflecting how clear the message's intent was, never "unset". \
+`project_hint` and \
 `board_hint` should come only from hashtags in the message, never invented, \
 and must be copied character-for-character from the hashtag token itself \
-(everything after the leading "#", up to the next whitespace/punctuation \
-that ends it) — never shortened, normalized, or paraphrased, and never \
-replaced by a similar-looking plain word elsewhere in the message even if \
-it seems like a better-known name for the same thing. For example, if the \
-message contains "#billing-le" and, separately, the plain word "billing" \
-later in the sentence, `project_hint` must still be exactly "billing-le" — \
-the later plain-text word is not the hashtag and must not overwrite it. \
+(everything after the leading "#", up to the end of the message or the next \
+"#", trailing spaces/punctuation trimmed — a hashtag can contain spaces, \
+e.g. "#Apollo Web Revamp") — never shortened, normalized, or paraphrased, \
+and never replaced by a similar-looking plain word elsewhere in the \
+message even if it seems like a better-known name for the same thing. For \
+example, if the message contains "#billing-le" and, separately, the plain \
+word "billing" later in the sentence, `project_hint` must still be exactly \
+"billing-le" — the later plain-text word is not the hashtag and must not \
+overwrite it. \
 When there is exactly one hashtag and nothing else distinguishes a board \
 from a project, treat it as `project_hint` — `project` is the required \
 field and the far more common single-hashtag intent; only use `board_hint` \
