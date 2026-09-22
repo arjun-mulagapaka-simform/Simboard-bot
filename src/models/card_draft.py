@@ -7,6 +7,14 @@ class CardDraft(BaseModel):
     """Resolved + validated card draft — ready for create_card() once approved."""
 
     workflow_id: str
+    original_text: str = ""
+    """The originating request message's text (before any clarification
+    replies), set once in `pipeline.resolve.resolve` and left untouched by
+    `apply_clarification`. Gives a multi-field clarification reply
+    background context it wouldn't otherwise have — see
+    `pipeline.resolve._split_multi_field_reply`. Empty string only for a
+    `CardDraft` built directly in a test without going through `resolve()`.
+    """
     title: str
     description: str | None
     card_type: str
@@ -31,16 +39,6 @@ class CardDraft(BaseModel):
     `CardDraft` field name (not the extraction hint name) so
     `pipeline.confidence` can look it up directly. Populated in
     `pipeline.resolve.resolve`, not touched by `apply_clarification`.
-    """
-    ambiguous_candidates: dict[str, list[str]] = Field(default_factory=dict)
-    """For an entry in `unresolved_fields` that is ambiguous (2+ fuzzy
-    candidates survived `settings.fuzzy_match_floor`, none dominant) rather
-    than a flat miss (zero candidates), the candidates' display names,
-    keyed by the same field name used in `unresolved_fields` (including the
-    `"assignee:{mention name}"` form). Populated in `pipeline.resolve`.
-    `pipeline.clarify.build_clarification_prompt` uses this to generate a
-    specific "did you mean X or Y?" question via an LLM call instead of the
-    generic template, per bot-docs/06-agent-workflow.md §Step 7.
     """
     clarification_prompt_id: str | None = None
     """Activity id of the bot's own last-sent clarification question for
